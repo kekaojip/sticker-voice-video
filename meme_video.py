@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""sticker-voice-video：文案分句 -> 配音 -> 表情包按句切 -> 底部字幕 -> 成片。
+"""sticker-voice-video：文案分句 -> 配音 -> 表情包每两句分句切 -> 底部字幕 -> 成片。
 
 一句话一个表情包、黑底、底部大字字幕、右上角免责，横屏 1280x720。
 
@@ -254,6 +254,20 @@ def split_clauses(text, max_len):
     return out or [text]
 
 
+def group_bounds(groups, adur, dur):
+    """按字数比例算每组分句在分段里的起止（秒）；最后一组留到分段结束（含尾停）。"""
+    total = sum(len(c) for g in groups for c in g) or 1
+    bounds, acc = [], 0
+    for gi, g in enumerate(groups):
+        st = adur * acc / total
+        acc += sum(len(c) for c in g)
+        en = adur * acc / total
+        if gi == len(groups) - 1:
+            en = dur
+        bounds.append((st, en))
+    return bounds
+
+
 def build_ass(segments, timing, audio_durs, cfg, disclaimer, ass_path):
     """timing: [(start, end)] 每句分段的起止（秒，含 0.4 秒尾停）；
     audio_durs: 每句配音本身的时长（不含尾停）。
@@ -322,34 +336,48 @@ def main():
     segments = proj["segments"]
     assert segments, "segments 为空"
 
-    # 随机配图：没写 sticker 的句子，从池子里不重复随机挑，并打印出来，
-    # 下次想固定某句就把打印出来的路径抄回那句的 "sticker"。
-    missing = [seg for seg in segments if not seg.get("sticker")]
-    if missing:
+    # 表情包：每 sticker_every（默认 2）句分句换一张，句内也换，不让一张
+    # 表情包顶着一整句长文案。没写 sticker 的句子按组随机挑，一条视频内
+    # 不重复，打印出来；下次想固定某句就把打印出来的路径抄回那句的
+    # "sticker"（整句都用它）。
+    group_n = max(1, int(proj.get("sticker_every", 2)))
+    for seg in segments:
+        clauses = split_clauses(seg["text"], cfg["wrap"])
+        seg["_groups"] = [clauses[i:i + group_n]
+                          for i in range(0, len(clauses), group_n)]
+        seg["_stickers"] = ([seg["sticker"]] * len(seg["_groups"])
+                            if seg.get("sticker")
+                            else [None] * len(seg["_groups"]))
+    missing_groups = sum(s["_stickers"].count(None) for s in segments)
+    if missing_groups:
         pool = build_pool(proj.get("pool", ["chinesebqb", "huaji", "user", "mine"]))
-        if len(pool) < len(missing):
-            raise RuntimeError(f"表情包池只有 {len(pool)} 张，不够 {len(missing)} 句随机用")
+        if len(pool) < missing_groups:
+            raise RuntimeError(f"表情包池只有 {len(pool)} 张，不够 {missing_groups} 组随机用")
         rng = random.Random(proj.get("seed", args.seed))
         # 优先动态：先从真动图里抽，动图不够再拿静态补，最后打乱顺序
-        # （2026-10-27 用户定：优先动态，会看着灵动一点）
         picks = []
         if proj.get("prefer_animated", True):
             anim = animated_pool(pool)
             # 先抽帧数多的（>=10 帧，动作幅度大、看着灵动），不够再拿其它动图补
             lively = animated_pool(pool, min_frames=10)
-            n_lively = min(len(missing), len(lively))
+            n_lively = min(missing_groups, len(lively))
             picks += rng.sample(lively, n_lively)
             rest_anim = [p for p in anim if p not in picks]
             picks += rng.sample(rest_anim,
-                                min(len(missing) - len(picks), len(rest_anim)))
+                                min(missing_groups - len(picks), len(rest_anim)))
             print(f"动态池：{len(anim)} 张真动图（其中 {len(lively)} 张 10 帧以上），"
                   f"本次用 {len(picks)} 张", flush=True)
         rest = [p for p in pool if p not in picks]
-        picks += rng.sample(rest, len(missing) - len(picks))
+        picks += rng.sample(rest, missing_groups - len(picks))
         rng.shuffle(picks)
-        for seg, pick in zip(missing, picks):
-            seg["sticker"] = pick
-            print(f"随机配图：{seg['text'][:16]}…… -> {pick}", flush=True)
+        it = iter(picks)
+        for seg in segments:
+            for gi, st in enumerate(seg["_stickers"]):
+                if st is None:
+                    pick = next(it)
+                    seg["_stickers"][gi] = pick
+                    print(f"随机配图：{''.join(seg['_groups'][gi])[:16]}…… -> {pick}",
+                          flush=True)
 
     work = args.work or os.path.join(proj_dir, "work")
     cache = os.path.join(work, ".cache")
@@ -372,35 +400,46 @@ def main():
         timing.append((t, t + dur))
         t += dur
 
-        sticker = resolve(seg["sticker"], proj_dir)
-        # 分段文件名带上表情包+时长 hash：换图/换文案不复用旧分段
+        stickers = [resolve(s, proj_dir) for s in seg["_stickers"]]
+        bounds = group_bounds(seg["_groups"], adur, dur)
+        # 分段文件名带上表情包+分界+时长 hash：换图/换文案不复用旧分段
         clip_key = hashlib.sha256(
-            f"{sticker}|{dur:.3f}|{size}".encode()).hexdigest()[:10]
+            ("|".join(stickers + [f"{a:.3f}-{b:.3f}" for a, b in bounds])
+             + f"|{dur:.3f}|{size}").encode()).hexdigest()[:10]
         clip = os.path.join(clips_dir, f"seg{i:02d}-{clip_key}.mp4")
         if not os.path.exists(clip):
-            vf = (
-                f"[0:v]fps=30,scale={cfg['sticker_w']}:-1:flags=lanczos[st];"
-                f"color=c=black:s={cfg['w']}x{cfg['h']}:r=30:d={dur:.3f}[bg];"
-                f"[bg][st]overlay=(W-w)/2:{cfg['sticker_y']}:shortest=1,"
-                f"format=yuv420p[v]"
-            )
-            # GIF 用 gif 解码器的 -ignore_loop 循环播放；静态图用 -loop 1。
-            # （ffmpeg 8 的 gif 解码器不认 -loop，静态图那套会直接报错。）
-            if sticker.lower().endswith(".gif"):
-                img_args = ["-ignore_loop", "0", "-i", sticker]
-            else:
-                img_args = ["-loop", "1", "-t", f"{dur:.3f}", "-i", sticker]
-            run(["ffmpeg", "-y", "-v", "error"] + img_args + [
+            # 每组分句一个表情包输入，用 enable 按时间段叠上去；配音只有
+            # 一个输入不切，换图不断音。
+            inputs = []
+            for s in stickers:
+                # GIF 用 gif 解码器的 -ignore_loop 循环播放；静态图用 -loop 1。
+                # （ffmpeg 8 的 gif 解码器不认 -loop，静态图那套会直接报错。）
+                if s.lower().endswith(".gif"):
+                    inputs += ["-ignore_loop", "0", "-i", s]
+                else:
+                    inputs += ["-loop", "1", "-t", f"{dur:.3f}", "-i", s]
+            n = len(stickers)
+            parts = [f"[{k}:v]fps=30,scale={cfg['sticker_w']}:-1:flags=lanczos[st{k}]"
+                     for k in range(n)]
+            parts.append(f"color=c=black:s={cfg['w']}x{cfg['h']}:r=30:d={dur:.3f}[bg]")
+            prev = "bg"
+            for k, (a, b) in enumerate(bounds):
+                parts.append(f"[{prev}][st{k}]overlay=(W-w)/2:{cfg['sticker_y']}:"
+                             f"enable='between(t,{a:.3f},{b:.3f})'[v{k}]")
+                prev = f"v{k}"
+            parts.append(f"[{prev}]format=yuv420p[v]")
+            run(["ffmpeg", "-y", "-v", "error"] + inputs + [
                  "-i", audio,
-                 "-filter_complex", vf,
-                 "-map", "[v]", "-map", "1:a",
+                 "-filter_complex", ";".join(parts),
+                 "-map", "[v]", "-map", f"{n}:a",
                  "-af", f"apad=whole_dur={dur:.3f}",
                  "-t", f"{dur:.3f}",
                  "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
                  "-r", "30", "-c:a", "aac", "-b:a", "128k", "-ar", "48000",
                  clip])
         clip_paths.append(clip)
-        print(f"seg{i}: {dur:.2f}s {seg['text'][:20]}...", flush=True)
+        print(f"seg{i}: {dur:.2f}s {seg['text'][:20]}... 表情包x{len(stickers)}",
+              flush=True)
 
     # 2. 拼接
     concat_list = os.path.join(work, "concat.txt")
