@@ -1,0 +1,8 @@
+# 表情包图不进仓库（版权 + 体积），用 scripts/fetch-stickers.sh 自己拉
+stickers/
+animated-stickers.json
+# 渲染中间产物和成片
+work/
+*.mp3
+*.mp4
+__pycache__/
