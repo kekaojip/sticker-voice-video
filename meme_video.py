@@ -230,8 +230,35 @@ def resolve(path, base):
     raise FileNotFoundError(f"找不到表情包：{path}（相对 {base} 找过）")
 
 
-def build_ass(segments, timing, cfg, disclaimer, ass_path):
-    """timing: [(start, end)] 每句的字幕起止（秒）。"""
+CLAUSE_SEP = "，、。；：！？…"
+
+
+def split_clauses(text, max_len):
+    """把一句话按标点切成短分句（标点留前一句），再把超长的分句按字数切短。
+    字幕一句只显示一个分句，跟着配音一段一段出，不整屏一次全显示。"""
+    clauses, buf = [], ""
+    for ch in text:
+        buf += ch
+        if ch in CLAUSE_SEP:
+            clauses.append(buf)
+            buf = ""
+    if buf:
+        clauses.append(buf)
+    out = []
+    for c in clauses:
+        while len(c) > max_len:
+            out.append(c[:max_len])
+            c = c[max_len:]
+        if c:
+            out.append(c)
+    return out or [text]
+
+
+def build_ass(segments, timing, audio_durs, cfg, disclaimer, ass_path):
+    """timing: [(start, end)] 每句分段的起止（秒，含 0.4 秒尾停）；
+    audio_durs: 每句配音本身的时长（不含尾停）。
+    每句按字数比例把配音时长分给各分句：分句在配音读到它时才出现，
+    最后一句分句留到分段结束（含尾停）。"""
     w, h = cfg["w"], cfg["h"]
     head = (
         "[Script Info]\nScriptType: v4.00+\nPlayResX: %d\nPlayResY: %d\n"
@@ -254,9 +281,18 @@ def build_ass(segments, timing, cfg, disclaimer, ass_path):
         return "%d:%02d:%02d.%02d" % (cs // 360000, (cs // 6000) % 60,
                                       (cs // 100) % 60, cs % 100)
     evs = []
-    for (st, en), seg in zip(timing, segments):
-        evs.append("Dialogue: 0,%s,%s,Sub,,0,0,0,,%s\n"
-                   % (ts(st), ts(en), wrap_text(seg["text"], cfg["wrap"])))
+    for (st, en), seg, adur in zip(timing, segments, audio_durs):
+        clauses = split_clauses(seg["text"], cfg["wrap"])
+        total = sum(len(c) for c in clauses) or 1
+        acc = 0
+        for k, c in enumerate(clauses):
+            cst = st + adur * acc / total
+            acc += len(c)
+            cen = st + adur * acc / total
+            if k == len(clauses) - 1:
+                cen = en  # 最后一句分句留到分段结束（含 0.4 秒尾停）
+            evs.append("Dialogue: 0,%s,%s,Sub,,0,0,0,,%s\n"
+                       % (ts(cst), ts(cen), wrap_text(c, cfg["wrap"])))
     if disclaimer:
         total = timing[-1][1] if timing else 0
         evs.append("Dialogue: 0,%s,%s,Disc,,0,0,0,,%s\n"
@@ -322,7 +358,7 @@ def main():
     os.makedirs(clips_dir, exist_ok=True)
 
     # 1. 配音（每句独立合成，时长 = 该句字幕/表情包的时长，不用对齐模型）
-    timing, clip_paths = [], []
+    timing, audio_durs, clip_paths = [], [], []
     t = 0.0
     for i, seg in enumerate(segments):
         voice = seg.get("voice", default_voice)
@@ -330,7 +366,9 @@ def main():
             audio = resolve(seg["audio"], proj_dir)
         else:
             audio = synth(seg["text"], voice, cache)
-        dur = probe_duration(audio) + TAIL
+        adur = probe_duration(audio)
+        audio_durs.append(adur)
+        dur = adur + TAIL
         timing.append((t, t + dur))
         t += dur
 
@@ -375,7 +413,7 @@ def main():
 
     # 3. 烧字幕（底部大字 + 右上角免责），一次重编码出片
     ass = os.path.join(work, "subs.ass")
-    build_ass(segments, timing, cfg, disclaimer, ass)
+    build_ass(segments, timing, audio_durs, cfg, disclaimer, ass)
     run(["ffmpeg", "-y", "-v", "error", "-i", joined,
          "-vf", f"ass={ass}",
          "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
