@@ -42,6 +42,7 @@ import hashlib
 import json
 import os
 import random
+import shlex
 import subprocess
 import sys
 import textwrap
@@ -181,7 +182,7 @@ def synth_volc(text, speaker, cache_dir):
     if not VOLC_TTS:
         raise RuntimeError("没配火山 TTS 命令：设环境变量 SVV_VOLC_TTS 指向你的 "
                            "TTS 命令，或给这句配 audio 自备配音")
-    run([VOLC_TTS, "--text-file", txt,
+    run(shlex.split(VOLC_TTS) + ["--text-file", txt,
          "--output", mp3, "--speaker", speaker])
     return mp3
 
@@ -198,7 +199,7 @@ def synth_edge(text, voice, cache_dir):
     txt = os.path.join(cache_dir, f"edge-{key}.txt")
     with open(txt, "w", encoding="utf-8") as f:
         f.write(text)
-    run([EDGE_TTS, "--text-file", txt,
+    run(shlex.split(EDGE_TTS) + ["--text-file", txt,
          "--output", mp3, "--speaker", voice])
     if not os.path.exists(mp3) or os.path.getsize(mp3) == 0:
         raise RuntimeError("edge-tts 没出音频，改用别的音色或自备 audio")
@@ -206,6 +207,13 @@ def synth_edge(text, voice, cache_dir):
 
 
 def synth(text, voice_name, cache_dir):
+    # 除了 VOICES 里的名字，也可以直接填 speaker ID：
+    # S_ 开头的是火山复刻音色（走 seed-icl-2.0），zh_ 开头的是火山预设音色。
+    # 复刻音色只在克隆它的那个火山账号上可用，别人的 key 调了会报未授权。
+    if voice_name not in VOICES:
+        if voice_name.startswith("S_") or voice_name.startswith("zh_"):
+            return synth_volc(text, voice_name, cache_dir)
+        raise ValueError(f"未知的 voice：{voice_name}（见 VOICES，或直接填 speaker ID）")
     kind, voice = VOICES[voice_name]
     if kind == "volc":
         return synth_volc(text, voice, cache_dir)

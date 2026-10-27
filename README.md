@@ -58,11 +58,24 @@ python3 meme_video.py example-project.json --out out.mp4
    剪映里的克隆音色（比如“曼波”）锁在剪映 App 里导不出来，
    想用它只能在剪映里生成音频后用 `audio` 接进来。
 2. **火山 seed-tts-2.0**：把你的 TTS 命令配到环境变量
-   `SVV_VOLC_TTS`，命令接受 `--text-file <txt> --output <mp3> --speaker <id>`。
+   `SVV_VOLC_TTS`，命令接受 `--text-file <txt> --output <mp3> --speaker <id>`，
+   可以带解释器写，比如 `python3 /path/to/tts.py`。
    预设音色见 `meme_video.py` 里的 `VOICES`（撒娇学妹 / 甜美校园 / 刘飞）。
 3. **edge-tts（免费）**：同理配 `SVV_EDGE_TTS`。
 
 没配命令又没给 `audio` 时脚本直接报错，不会静默换音色。
+
+### 用自己的复刻音色
+
+想用自己的声音（比如复刻了自己或家人的声音）也很简单：
+
+1. 在火山引擎控制台“声音复刻”里克隆，得到一个 `S_` 开头的 speaker ID。
+   参考音频 10–30 秒干净朗读就行（一段自己录的音，或者一段已有配音）。
+2. 在 `project.json` 里直接填这个 ID：`"voice": "S_你的ID"`，
+   也可以每句单独指定。模板认 `S_` 开头的 ID，走 seed-icl-2.0。
+   `zh_` 开头的火山预设音色 ID 同样可以直接填。
+3. 注意：复刻音色只认克隆它的那个火山账号的 key，换别人的 key 会报
+   资源未授权；也不要把别人的 `S_` ID 填进来，那不是你的声音。
 
 ## 表情包
 
