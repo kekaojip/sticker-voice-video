@@ -19,7 +19,7 @@
 # 1. 依赖：Python 3.10+、ffmpeg（含 libx264、ASS 字幕）、Noto Sans CJK 字体
 #    Ubuntu/Debian：sudo apt install ffmpeg fonts-noto-cjk
 
-# 2. 拉表情包（ChineseBQB 精选分类，约 365MB）
+# 2. 拉表情包（ChineseBQB 精选分类，约 501MB）
 bash scripts/fetch-stickers.sh
 python3 scripts/build-animated-index.py   # 生成动图清单 animated-stickers.json
 
@@ -67,13 +67,13 @@ python3 meme_video.py example-project.json --out out.mp4
 ## 表情包
 
 - `scripts/fetch-stickers.sh` 从 [zhaoolee/ChineseBQB](https://github.com/zhaoolee/ChineseBQB)
-  拉 33 个精选分类（白色小人、金馆长熊猫、猫和老鼠、喵星人……），
+  拉 41 个精选分类（白色小人、金馆长熊猫、猫和老鼠、喵星人……），
   真人、名人、政治类没拉。图片本身**不进本仓库**（版权 + 体积），
   用的时候自己拉；`stickers/` 已在 `.gitignore` 里。
 - BQB 没有单独的“动态”分类，分类按角色分，`.gif` 后缀也不能当动态用
   （很多只是单帧图）。`build-animated-index.py` 按帧数筛真动图，
-  本地 2591 张里真动图 518 张，动图最多的分类是白色小人 157、猫和老鼠 91、
-  金馆长熊猫 63、小幺鸡 50。
+  本地 3250 张里真动图 831 张，动图最多的分类是白色小人 157、穿什么 119、
+  猫和老鼠 91、金馆长熊猫 63、小幺鸡 50、汪蛋 45。
 
 ## 注意
 

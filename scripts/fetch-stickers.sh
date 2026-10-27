@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 从 zhaoolee/ChineseBQB 拉精选分类到 stickers/chinesebqb/。
-# 只拉 33 个分类（约 2591 张、365MB），真人、名人、政治类不拉。
+# 只拉 41 个分类（约 3250 张、501MB），真人、名人、政治类不拉。
 # 用法：bash scripts/fetch-stickers.sh
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -14,8 +14,13 @@ read -r -d '' DIRS <<'EOF' || true
 010Cat_是喵星人啦🐱BQB
 011Dog_狗🐶BQB
 012Parrot_鹦鹉🐦BQB
+013PigPecs_小猪佩奇👑BQB
 014Pig_猪🐖BQB
 015Golden_Curator_Panda金馆长熊猫🐼BQB
+017Playing_演奏🎻BQB
+018WangEgg_汪蛋🥚BQB
+019Green_Hat绿帽子🖼BQB
+020TATANBQB
 023Emoji_表情符号BQB
 026Chicken_小幺鸡🐔BQB
 027Turtle_乌龟🐢BQB
@@ -25,7 +30,9 @@ read -r -d '' DIRS <<'EOF' || true
 034WhiteVillain_白色小人👶🏻BQB
 035TomAndJerry_猫和老鼠BQB
 036Pikachu_皮卡丘BQB
+043Altman_奥特曼BQB
 045MatchstickMen_火柴人BQB
+046WhatToWear_穿什么BQB
 048SpongeBob_海绵宝宝BQB
 049CatEveryday_猫咪日常BQB
 052Squirtle_杰尼龟BQB
@@ -33,6 +40,7 @@ read -r -d '' DIRS <<'EOF' || true
 060MurCat_Mur猫😺BQB
 065TravelFrog_旅行青蛙🐸BQB
 083ChineseNewYear_中国春节_BQB
+090SailorMoon_美少女战士_BQB
 095GenShin_原神_BQB
 098spyxfamily_间谍过家家_BQB
 106_Frieren_芙莉莲🪄_BQB
