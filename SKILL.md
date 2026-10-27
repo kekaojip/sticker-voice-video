@@ -1,6 +1,6 @@
 ---
 name: sticker-voice-video
-description: Turn text into a captioned sticker voiceover video: TTS narration, stickers that change every 2 clauses (animated GIFs first), clause-by-clause subtitles synced to the voice, 1280x720 horizontal. 文案 → 配音 → 表情包 → 字幕 → 横屏成片，一条命令出片。Use when the user asks for a sticker voiceover video, meme dub video, 表情包配音视频, 黑底视频, or 必剪同款.
+description: "Turn text into a captioned sticker voiceover video: TTS narration, stickers that change every 2 clauses (animated GIFs first), clause-by-clause subtitles synced to the voice, 1280x720 horizontal. 文案 → 配音 → 表情包 → 字幕 → 横屏成片，一条命令出片。Use when the user asks for a sticker voiceover video, meme dub video, 表情包配音视频, 黑底视频, or 必剪同款."
 ---
 
 # Sticker Voice Video
