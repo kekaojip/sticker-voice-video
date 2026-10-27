@@ -105,10 +105,11 @@ def build_pool(names):
     return sorted(pool)
 
 
-def animated_pool(pool):
-    """从候选池里筛出真动图（多帧 GIF）。BQB 那 518 张有现成清单
+def animated_pool(pool, min_frames=0):
+    """从候选池里筛出真动图（多帧 GIF）。BQB 那 831 张有现成清单
     （animated-stickers.json）；其它包现场用 PIL 验帧数，验不了就按
-    .gif 扩展名算。注意：很多 .gif 只是单帧图，扩展名不能当动态用。"""
+    .gif 扩展名算。注意：很多 .gif 只是单帧图，扩展名不能当动态用。
+    min_frames>0 时只留帧数够多的（动作幅度大、看着更灵动）。"""
     pool_set = set(pool)
     anim = []
     cache = os.path.join(MEME_DIR, "animated-stickers.json")
@@ -132,6 +133,19 @@ def animated_pool(pool):
     except ImportError:
         anim += [p for p in pool if p.lower().endswith(".gif")
                  and p not in anim]
+    if min_frames > 0:
+        try:
+            from PIL import Image
+            lively = []
+            for p in anim:
+                try:
+                    if getattr(Image.open(p), "n_frames", 1) >= min_frames:
+                        lively.append(p)
+                except Exception:
+                    pass
+            return sorted(set(lively))
+        except ImportError:
+            return sorted(set(anim))
     return sorted(set(anim))
 
 
@@ -277,9 +291,15 @@ def main():
         picks = []
         if proj.get("prefer_animated", True):
             anim = animated_pool(pool)
-            n_anim = min(len(missing), len(anim))
-            picks += rng.sample(anim, n_anim)
-            print(f"动态池：{len(anim)} 张真动图，本次用 {n_anim} 张", flush=True)
+            # 先抽帧数多的（>=10 帧，动作幅度大、看着灵动），不够再拿其它动图补
+            lively = animated_pool(pool, min_frames=10)
+            n_lively = min(len(missing), len(lively))
+            picks += rng.sample(lively, n_lively)
+            rest_anim = [p for p in anim if p not in picks]
+            picks += rng.sample(rest_anim,
+                                min(len(missing) - len(picks), len(rest_anim)))
+            print(f"动态池：{len(anim)} 张真动图（其中 {len(lively)} 张 10 帧以上），"
+                  f"本次用 {len(picks)} 张", flush=True)
         rest = [p for p in pool if p not in picks]
         picks += rng.sample(rest, len(missing) - len(picks))
         rng.shuffle(picks)
