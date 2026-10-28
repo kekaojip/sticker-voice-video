@@ -7,7 +7,7 @@ description: "Turn text into a captioned sticker voiceover video: TTS narration,
 
 Turn copy into a finished horizontal video: black background, one sticker
 in the centre that changes as the narration goes on, big white subtitles
-at the bottom, a disclaimer at the top right. 1280x720, one command.
+right under the sticker. 1280x720, one command.
 
 ![Preview](assets/preview-1.jpg)
 
@@ -31,7 +31,6 @@ Requires: Python 3.10+, ffmpeg (libx264 + ASS subtitles), Noto Sans CJK.
 {
   "size": "horizontal",
   "voice": "volc-sajiao",
-  "disclaimer": "本视频仅供娱乐，无营销属性",
   "segments": [
     {"text": "第一句文案……", "sticker": "stickers/mine/panda.jpg"},
     {"text": "第二句文案……"}
@@ -86,7 +85,7 @@ character-story Writing-DNA.
 - Sticker images are NOT in this repo (copyright + size). Fetch them with
   `scripts/fetch-stickers.sh` or point `pool` at your own folder.
 - Note: Tom & Jerry, Pikachu, SpongeBob and other characters in the
-  sticker packs are copyrighted. A disclaimer does not remove the risk.
+  sticker packs are copyrighted.
 
 ## Voiceover
 
@@ -106,7 +105,8 @@ character-story Writing-DNA.
 
 - GIF stickers need `-ignore_loop 0` (ffmpeg 8's gif decoder rejects
   `-loop`); static images use `-loop 1`.
-- ASS alignment: 9 = top right (the disclaimer), 2 = bottom centre
-  (subtitles). 3 is bottom right, not top right.
+- Subtitles use ASS alignment 8 (top centre) with a per-sentence MarginV,
+  so each line sits right under its sticker. Stickers are fitted into a
+  680x500 box, centred vertically; subtitles are 64pt.
 - Only horizontal 1280x720 is supported. This video style is horizontal
   only, by design.

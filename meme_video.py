@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """sticker-voice-video：文案分句 -> 配音 -> 表情包每两句分句切 -> 底部字幕 -> 成片。
 
-一句话一个表情包、黑底、底部大字字幕、右上角免责，横屏 1280x720。
+一句话一个表情包、黑底、底部大字字幕，横屏 1280x720。
 
 用法：
   python3 meme_video.py project.json --out out.mp4
@@ -11,7 +11,6 @@ project.json 格式：
   {
     "size": "horizontal",          // 横屏 1280x720（默认；这个视频只做横屏）
     "voice": "volc-sajiao",        // 默认。见 VOICES；也可每句单独指定 voice
-    "disclaimer": "本视频仅供娱乐，无营销属性",  // 右上角小字，设为 "" 则不要
     "segments": [
       {"text": "凌晨三点深圳福田，三十块青旅床位，我悟了！",
        "sticker": "stickers/mine/panda.jpg",  // 相对 project.json，或相对本仓库
@@ -78,10 +77,13 @@ VOICES = {
 SIZES = {
     # 横屏是这套模板的唯一默认（2026-10-27 用户亲口定：这个视频只能做横屏）。
     # vertical 只是代码里留着的备用，不主动用。
-    "horizontal": {"w": 1280, "h": 720,  "sticker_w": 360, "sticker_y": 55,
-                   "font": 48, "wrap": 21, "margin_v": 70,  "disc_font": 24},
-    "vertical":   {"w": 1080, "h": 1920, "sticker_w": 700, "sticker_y": 380,
-                   "font": 62, "wrap": 12, "margin_v": 480, "disc_font": 26},
+    # 版式 v2（2026-10-28 用户定：表情包放大居中、字幕紧贴在表情包下面、
+    # 字放大）：表情包按 box_w x box_h 等比适配、垂直居中；字幕用 Alignment 8
+    # 顶对齐，每句的 MarginV 按该句表情包底部 + 16 算（见 main 里的 sub_top）。
+    "horizontal": {"w": 1280, "h": 720,  "box_w": 680, "box_h": 500,
+                   "font": 64, "wrap": 16},
+    "vertical":   {"w": 1080, "h": 1920, "box_w": 700, "box_h": 900,
+                   "font": 72, "wrap": 10},
 }
 TAIL = 0.4  # 每句结束后留的停顿（秒），贴近剪映里句子间的自然停顿
 # 字幕字体：环境变量 SVV_FONT 优先，其次常见的 Noto Sans CJK Bold 位置。
@@ -172,6 +174,22 @@ def probe_duration(path):
         "ffprobe", "-v", "error", "-show_entries", "format=duration",
         "-of", "csv=p=0", path], text=True).strip()
     return float(out)
+
+
+def probe_size(path):
+    """图片/动图原始宽高（第一路视频流）。"""
+    out = subprocess.check_output([
+        "ffprobe", "-v", "error", "-select_streams", "v:0",
+        "-show_entries", "stream=width,height", "-of", "csv=p=0",
+        path], text=True).strip()
+    w, h = out.split(",")
+    return int(w), int(h)
+
+
+def fit_box(w, h, bw, bh):
+    """等比放进 bw x bh 的盒子，返回缩放后宽高。"""
+    s = min(bw / w, bh / h)
+    return max(1, int(w * s)), max(1, int(h * s))
 
 
 def find_coli():
@@ -389,13 +407,15 @@ def group_bounds(groups, adur, dur):
     return bounds
 
 
-def build_ass(segments, timing, audio_durs, cfg, disclaimer, ass_path,
-              clause_bounds=None):
+def build_ass(segments, timing, audio_durs, cfg, ass_path,
+              clause_bounds=None, sub_tops=None):
     """timing: [(start, end)] 每句分段的起止（秒，含 0.4 秒尾停）；
     audio_durs: 每句配音本身的时长（不含尾停）。
     clause_bounds: 每句的实测分句起止 [(start, end)]（相对配音开头，秒），
     有它就按实测出字幕，没有的那句按字数比例估（老路）。最后一句分句
-    两种路都留到分段结束（含尾停）。"""
+    两种路都留到分段结束（含尾停）。
+    sub_tops: 每句字幕顶边的 y（像素，相对画面顶）；字幕用 Alignment 8
+    顶对齐，逐句贴在该句表情包下面。不给则贴底（MarginV 0 的老位置）。"""
     w, h = cfg["w"], cfg["h"]
     head = (
         "[Script Info]\nScriptType: v4.00+\nPlayResX: %d\nPlayResY: %d\n"
@@ -406,12 +426,11 @@ def build_ass(segments, timing, audio_durs, cfg, disclaimer, ass_path,
         "ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
         "Alignment, MarginL, MarginR, MarginV, Encoding\n"
         "Style: Sub,Noto Sans CJK SC,%d,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,"
-        "-1,0,0,0,100,100,0,0,1,2.5,1,2,40,40,%d,1\n"
-        "Style: Disc,Noto Sans CJK SC,%d,&H00E6E6E6,&H000000FF,&H00000000,&H80000000,"
-        "0,0,0,0,100,100,0,0,1,1,0,9,28,28,36,1\n\n"
+        "-1,0,0,0,100,100,0,0,1,2.5,1,8,40,40,0,1\n"
+        "\n"
         "[Events]\n"
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, "
-        "Effect, Text\n" % (w, h, cfg["font"], cfg["margin_v"], cfg["disc_font"])
+        "Effect, Text\n" % (w, h, cfg["font"])
     )
     def ts(s):
         cs = int(round(s * 100))
@@ -419,6 +438,7 @@ def build_ass(segments, timing, audio_durs, cfg, disclaimer, ass_path,
                                       (cs // 100) % 60, cs % 100)
     evs = []
     for si, ((st, en), seg, adur) in enumerate(zip(timing, segments, audio_durs)):
+        mv = sub_tops[si] if sub_tops and si < len(sub_tops) else 0
         clauses = split_clauses(seg["text"], cfg["wrap"])
         cb = clause_bounds[si] if clause_bounds and si < len(clause_bounds) else None
         if cb and len(cb) == len(clauses):
@@ -427,8 +447,8 @@ def build_ass(segments, timing, audio_durs, cfg, disclaimer, ass_path,
                 cst, cen = st + cb[k][0], st + cb[k][1]
                 if k == len(clauses) - 1:
                     cen = en
-                evs.append("Dialogue: 0,%s,%s,Sub,,0,0,0,,%s\n"
-                           % (ts(cst), ts(cen), wrap_text(c, cfg["wrap"])))
+                evs.append("Dialogue: 0,%s,%s,Sub,,0,0,%d,,%s\n"
+                           % (ts(cst), ts(cen), mv, wrap_text(c, cfg["wrap"])))
             continue
         total = sum(len(c) for c in clauses) or 1
         acc = 0
@@ -438,12 +458,8 @@ def build_ass(segments, timing, audio_durs, cfg, disclaimer, ass_path,
             cen = st + adur * acc / total
             if k == len(clauses) - 1:
                 cen = en  # 最后一句分句留到分段结束（含 0.4 秒尾停）
-            evs.append("Dialogue: 0,%s,%s,Sub,,0,0,0,,%s\n"
-                       % (ts(cst), ts(cen), wrap_text(c, cfg["wrap"])))
-    if disclaimer:
-        total = timing[-1][1] if timing else 0
-        evs.append("Dialogue: 0,%s,%s,Disc,,0,0,0,,%s\n"
-                   % (ts(0), ts(total), disclaimer))
+            evs.append("Dialogue: 0,%s,%s,Sub,,0,0,%d,,%s\n"
+                       % (ts(cst), ts(cen), mv, wrap_text(c, cfg["wrap"])))
     with open(ass_path, "w", encoding="utf-8") as f:
         f.write(head + "".join(evs))
 
@@ -468,7 +484,6 @@ def main():
     size = args.size or proj.get("size", "horizontal")
     cfg = SIZES[size]
     default_voice = args.voice or proj.get("voice", "volc-sajiao")
-    disclaimer = proj.get("disclaimer", "本视频仅供娱乐，无营销属性")
     segments = proj["segments"]
     assert segments, "segments 为空"
 
@@ -522,7 +537,7 @@ def main():
     os.makedirs(clips_dir, exist_ok=True)
 
     # 1. 配音（每句独立合成，时长 = 该句字幕/表情包的时长，不用对齐模型）
-    timing, audio_durs, clip_paths, clause_bounds = [], [], [], []
+    timing, audio_durs, clip_paths, clause_bounds, sub_tops = [], [], [], [], []
     t = 0.0
     for i, seg in enumerate(segments):
         voice = seg.get("voice", default_voice)
@@ -561,10 +576,23 @@ def main():
 
         stickers = [resolve(s, proj_dir) for s in seg["_stickers"]]
         bounds = group_bounds(seg["_groups"], adur, dur)
-        # 分段文件名带上表情包+分界+时长 hash：换图/换文案不复用旧分段
+        # 版式 v2：表情包等比放进 box_w x box_h 的盒子，整段（表情包+字幕）
+        # 垂直居中，字幕贴在表情包下面 16px。先算每组表情包的显示尺寸，
+        # 再算整段的盒顶和字幕顶边，字幕顶边留给 build_ass 用。
+        sizes = [fit_box(*probe_size(s), cfg["box_w"], cfg["box_h"])
+                 for s in stickers]
+        hmax = max(h for _, h in sizes)
+        line_h = cfg["font"] + 6
+        lmax = max(wrap_text(c, cfg["wrap"]).count("\\N") + 1
+                   for g in seg["_groups"] for c in g)
+        sub_h = lmax * line_h
+        box_top = (cfg["h"] - (hmax + 16 + sub_h)) // 2
+        sub_tops.append(box_top + hmax + 16)
+        # 分段文件名带上表情包+分界+时长+版式 hash：换图/换文案/换版式不复用旧分段
         clip_key = hashlib.sha256(
             ("|".join(stickers + [f"{a:.3f}-{b:.3f}" for a, b in bounds])
-             + f"|{dur:.3f}|{size}").encode()).hexdigest()[:10]
+             + f"|{dur:.3f}|{size}|{cfg['box_w']}x{cfg['box_h']}|"
+               f"{cfg['font']}|{cfg['wrap']}").encode()).hexdigest()[:10]
         clip = os.path.join(clips_dir, f"seg{i:02d}-{clip_key}.mp4")
         if not os.path.exists(clip):
             # 每组分句一个表情包输入，用 enable 按时间段叠上去；配音只有
@@ -578,12 +606,13 @@ def main():
                 else:
                     inputs += ["-loop", "1", "-t", f"{dur:.3f}", "-i", s]
             n = len(stickers)
-            parts = [f"[{k}:v]fps=30,scale={cfg['sticker_w']}:-1:flags=lanczos[st{k}]"
-                     for k in range(n)]
+            parts = [f"[{k}:v]fps=30,scale={sizes[k][0]}:{sizes[k][1]}:"
+                     f"flags=lanczos[st{k}]" for k in range(n)]
             parts.append(f"color=c=black:s={cfg['w']}x{cfg['h']}:r=30:d={dur:.3f}[bg]")
             prev = "bg"
             for k, (a, b) in enumerate(bounds):
-                parts.append(f"[{prev}][st{k}]overlay=(W-w)/2:{cfg['sticker_y']}:"
+                y = box_top + (hmax - sizes[k][1]) // 2
+                parts.append(f"[{prev}][st{k}]overlay=(W-w)/2:{y}:"
                              f"enable='between(t,{a:.3f},{b:.3f})'[v{k}]")
                 prev = f"v{k}"
             parts.append(f"[{prev}]format=yuv420p[v]")
@@ -609,9 +638,9 @@ def main():
     run(["ffmpeg", "-y", "-v", "error", "-f", "concat", "-safe", "0",
          "-i", concat_list, "-c", "copy", joined])
 
-    # 3. 烧字幕（底部大字 + 右上角免责），一次重编码出片
+    # 3. 烧字幕（底部大字），一次重编码出片
     ass = os.path.join(work, "subs.ass")
-    build_ass(segments, timing, audio_durs, cfg, disclaimer, ass, clause_bounds)
+    build_ass(segments, timing, audio_durs, cfg, ass, clause_bounds, sub_tops)
     run(["ffmpeg", "-y", "-v", "error", "-i", joined,
          "-vf", f"ass={ass}",
          "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",

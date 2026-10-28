@@ -50,7 +50,6 @@ python3 meme_video.py example-project.json --out out.mp4
 {
   "size": "horizontal",
   "voice": "volc-sajiao",
-  "disclaimer": "本视频仅供娱乐，无营销属性",
   "pool": ["chinesebqb", "huaji", "user", "mine"],
   "seed": 7,
   "segments": [
