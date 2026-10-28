@@ -53,14 +53,27 @@ Requires: Python 3.10+, ffmpeg (libx264 + ASS subtitles), Noto Sans CJK.
 - `seed` (optional): fixes the random sticker picks. `pool` (optional):
   restrict the sticker pool, e.g. `["chinesebqb"]`.
 
+## Writing copy
+
+Read `hooks.md` before drafting copy: the first sentence must be one of
+five hook types (number barrage / destiny freeze / abnormal scene first /
+ending first / time-place-action), structure hook → background/peak →
+twist → crash scene → closing one-liner; exact numbers over vague
+description, scene over summary. Adapted from Story Studio's
+character-story Writing-DNA.
+
 ## Subtitles
 
 - Split by punctuation into short clauses (，、。；：！？…); each clause
   is its own subtitle event, appearing when the narration reaches it.
   A whole sentence never appears at once and waits to be read.
-- Clause timing is estimated by character count within the sentence's
-  audio duration. Pauses at commas in TTS line up with the split, so it
-  is roughly in sync. This is not word-level alignment.
+- Clause timing: by default (`--align auto`) each sentence's narration is
+  transcribed locally with Coli (SenseVoice) and clauses use the real
+  measured onsets. Without Coli, or when a sentence fails to align, timing
+  falls back to character-count estimation and the log says so.
+  `--align on` fails loudly instead of falling back; `--align off` uses
+  estimation only. Install Coli with Node.js 20+:
+  `npm install -g @marswave/coli@0.0.20` (first run downloads ~155MB model).
 - Each sentence lasts its narration duration + 0.4 s tail pause.
 
 ## Stickers

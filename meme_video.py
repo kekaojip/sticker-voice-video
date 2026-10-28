@@ -36,13 +36,21 @@ project.json 格式：
 - 随机配图优先真动图（多帧 GIF）：BQB 没有单独的动态分类，分类按角色
   分，.gif 后缀也不能当动态用（很多只是单帧图），得按帧数筛。
 - 表情包图片本身不进仓库（版权 + 体积），用的时候自己拉。
+
+字幕对齐（可选，默认开）：
+- 每句配音跑本地 Coli（SenseVoice）实测字音时间戳，分句按真实 onset
+  出字幕；没装 Coli 或对不上的那句自动按字数比例估，日志里写明。
+- 装 Coli：Node.js 20+，npm install -g @marswave/coli@0.0.20
+  （首跑会下载约 155MB 识别模型）。--align off 关掉，--align on 则失败直接报错。
 """
 import argparse
+import difflib
 import hashlib
 import json
 import os
 import random
 import shlex
+import shutil
 import subprocess
 import sys
 import textwrap
@@ -51,6 +59,10 @@ MEME_DIR = os.path.dirname(os.path.abspath(__file__))
 # TTS 命令从环境变量来（见文件头 docstring）；没配就不走 TTS。
 VOLC_TTS = os.environ.get("SVV_VOLC_TTS", "")
 EDGE_TTS = os.environ.get("SVV_EDGE_TTS", "")
+# 字幕对齐（可选）：本地 Coli 识别。装法见 README“字幕对齐”；
+# COLI_BIN 环境变量可指定可执行文件位置，否则找 PATH 里的 coli。
+COLI_BIN = os.environ.get("COLI_BIN", "")
+COLI_MODEL = "sensevoice"
 
 VOICES = {
     # 火山 seed-tts-2.0 预设（走 SVV_VOLC_TTS 命令）
@@ -162,6 +174,115 @@ def probe_duration(path):
     return float(out)
 
 
+def find_coli():
+    for cand in (COLI_BIN, shutil.which("coli")):
+        if cand and os.path.isfile(cand) and os.access(cand, os.X_OK):
+            return cand
+    return None
+
+
+def _extract_json(text):
+    """coli 首跑会在 stdout 混进模型下载进度；只取第一个 { 到最后一个 }。"""
+    a, b = text.find("{"), text.rfind("}")
+    if a < 0 or b <= a:
+        raise ValueError("coli 没返回 JSON")
+    return json.loads(text[a:b + 1])
+
+
+def transcribe_coli(audio, cache_dir):
+    """跑本地 Coli 得字音时间戳（tokens + onset），按音频 sha256 缓存。
+    返回 (asr_dict, None)；失败返回 (None, 原因)，调用方按字数估兜底，
+    这里不抛错。"""
+    try:
+        h = hashlib.sha256()
+        with open(audio, "rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                h.update(chunk)
+        jf = os.path.join(cache_dir, f"align-{h.hexdigest()[:16]}.json")
+        if os.path.exists(jf) and os.path.getsize(jf) > 0:
+            asr = json.load(open(jf, encoding="utf-8"))
+        else:
+            coli = find_coli()
+            if not coli:
+                return None, "coli 未安装"
+            r = subprocess.run([coli, "asr", "-j", "--model", COLI_MODEL,
+                                "--language", "zh", audio],
+                               capture_output=True, text=True, timeout=300)
+            if r.returncode != 0:
+                return None, f"coli 退出码 {r.returncode}：{r.stderr.strip()[-200:]}"
+            asr = _extract_json(r.stdout)
+            with open(jf, "w", encoding="utf-8") as f:
+                json.dump(asr, f, ensure_ascii=False)
+        toks, times, dur = asr.get("tokens"), asr.get("timestamps"), asr.get("duration")
+        if (not isinstance(toks, list) or not toks
+                or not isinstance(times, list) or len(toks) != len(times)
+                or type(dur) not in (int, float) or dur <= 0
+                or any(type(t) not in (int, float) for t in times)
+                or any(t < 0 or t >= dur for t in times)
+                or any(times[i] < times[i - 1] for i in range(1, len(times)))):
+            return None, "coli 返回的时间戳无效"
+        return asr, None
+    except Exception as e:  # noqa: BLE001 - 对齐失败一律兜底，不拦出片
+        return None, f"对齐异常：{e}"
+
+
+def align_clauses(text, clauses, asr):
+    """把分句边界对到 ASR token 的 onset 时间戳上（相对音频开头，秒）。
+    返回 [(start, end)]（末句 end 是音频时长，调用方再延到分段末尾）；
+    对不上返回 None，调用方按字数估兜底。ASR 偶有同音错字（轮->伦）和
+    丢标点，用 difflib 按字对齐，不要求逐字全等。"""
+    toks, times, dur = asr["tokens"], asr["timestamps"], asr["duration"]
+    ref = "".join(text.split())
+    hyp = "".join(toks)
+    if not ref or not hyp:
+        return None
+    sm = difflib.SequenceMatcher(None, ref, hyp, autojunk=False)
+    if sm.ratio() < 0.75:
+        return None
+    ref2tok = {}
+    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+        if tag == "equal":
+            for k in range(i2 - i1):
+                ref2tok[i1 + k] = j1 + k
+    if not ref2tok:
+        return None
+    # 每个分句在 ref 里的起始位置（去空格后的字数累计）
+    starts, pos = [], 0
+    for c in clauses:
+        starts.append(pos)
+        pos += len("".join(c.split()))
+    if pos > len(ref):
+        return None
+    mapped = sorted(ref2tok)
+
+    def tok_at(p):
+        if p in ref2tok:
+            return ref2tok[p]
+        nxt = [m for m in mapped if m > p]
+        return ref2tok[nxt[0]] if nxt else None
+
+    bounds, prev = [], -1.0
+    for k, s in enumerate(starts):
+        ti = tok_at(s)
+        if ti is None:
+            return None
+        st = float(times[ti])
+        if st < prev or st >= dur:
+            return None
+        if k == len(starts) - 1:
+            en = float(dur)
+        else:
+            ti2 = tok_at(starts[k + 1])
+            if ti2 is None:
+                return None
+            en = float(times[ti2])
+            if en <= st:
+                return None
+        bounds.append((st, en))
+        prev = st
+    return bounds
+
+
 def wrap_text(text, width):
     """按字符数硬断行（中文无空格，按字切即可），返回 ASS 用的 \\N 连接串。"""
     lines = []
@@ -268,11 +389,13 @@ def group_bounds(groups, adur, dur):
     return bounds
 
 
-def build_ass(segments, timing, audio_durs, cfg, disclaimer, ass_path):
+def build_ass(segments, timing, audio_durs, cfg, disclaimer, ass_path,
+              clause_bounds=None):
     """timing: [(start, end)] 每句分段的起止（秒，含 0.4 秒尾停）；
     audio_durs: 每句配音本身的时长（不含尾停）。
-    每句按字数比例把配音时长分给各分句：分句在配音读到它时才出现，
-    最后一句分句留到分段结束（含尾停）。"""
+    clause_bounds: 每句的实测分句起止 [(start, end)]（相对配音开头，秒），
+    有它就按实测出字幕，没有的那句按字数比例估（老路）。最后一句分句
+    两种路都留到分段结束（含尾停）。"""
     w, h = cfg["w"], cfg["h"]
     head = (
         "[Script Info]\nScriptType: v4.00+\nPlayResX: %d\nPlayResY: %d\n"
@@ -295,8 +418,18 @@ def build_ass(segments, timing, audio_durs, cfg, disclaimer, ass_path):
         return "%d:%02d:%02d.%02d" % (cs // 360000, (cs // 6000) % 60,
                                       (cs // 100) % 60, cs % 100)
     evs = []
-    for (st, en), seg, adur in zip(timing, segments, audio_durs):
+    for si, ((st, en), seg, adur) in enumerate(zip(timing, segments, audio_durs)):
         clauses = split_clauses(seg["text"], cfg["wrap"])
+        cb = clause_bounds[si] if clause_bounds and si < len(clause_bounds) else None
+        if cb and len(cb) == len(clauses):
+            # 实测对齐：分句起止来自 ASR token onset；末句仍留到分段结束
+            for k, c in enumerate(clauses):
+                cst, cen = st + cb[k][0], st + cb[k][1]
+                if k == len(clauses) - 1:
+                    cen = en
+                evs.append("Dialogue: 0,%s,%s,Sub,,0,0,0,,%s\n"
+                           % (ts(cst), ts(cen), wrap_text(c, cfg["wrap"])))
+            continue
         total = sum(len(c) for c in clauses) or 1
         acc = 0
         for k, c in enumerate(clauses):
@@ -324,6 +457,9 @@ def main():
     ap.add_argument("--work", default=None)
     ap.add_argument("--seed", type=int, default=None,
                     help="随机配图的种子；不给则每次随机不同")
+    ap.add_argument("--align", choices=["auto", "on", "off"], default="auto",
+                    help="字幕对齐：auto=默认用 Coli 实测时间戳，失败按字数估并打日志；"
+                         "on=失败直接报错；off=只按字数估")
     args = ap.parse_args()
 
     proj_path = os.path.abspath(args.project)
@@ -386,7 +522,7 @@ def main():
     os.makedirs(clips_dir, exist_ok=True)
 
     # 1. 配音（每句独立合成，时长 = 该句字幕/表情包的时长，不用对齐模型）
-    timing, audio_durs, clip_paths = [], [], []
+    timing, audio_durs, clip_paths, clause_bounds = [], [], [], []
     t = 0.0
     for i, seg in enumerate(segments):
         voice = seg.get("voice", default_voice)
@@ -399,6 +535,29 @@ def main():
         dur = adur + TAIL
         timing.append((t, t + dur))
         t += dur
+
+        # 字幕对齐（默认开）：用 Coli 实测每句分句的起止，失败则按字数估
+        seg["_align"] = None
+        if args.align != "off":
+            asr, err = transcribe_coli(audio, cache)
+            if asr is None:
+                msg = f"seg{i}: 字幕对齐=按字数估（{err}）"
+                if args.align == "on":
+                    raise RuntimeError(msg)
+                print(msg, flush=True)
+            else:
+                bounds = align_clauses(seg["text"],
+                                       split_clauses(seg["text"], cfg["wrap"]), asr)
+                if bounds is None:
+                    msg = f"seg{i}: 字幕对齐=按字数估（ASR 文本与文案对不上）"
+                    if args.align == "on":
+                        raise RuntimeError(msg)
+                    print(msg, flush=True)
+                else:
+                    seg["_align"] = bounds
+                    print(f"seg{i}: 字幕对齐=实测（Coli，{len(bounds)} 分句）",
+                          flush=True)
+        clause_bounds.append(seg["_align"])
 
         stickers = [resolve(s, proj_dir) for s in seg["_stickers"]]
         bounds = group_bounds(seg["_groups"], adur, dur)
@@ -452,7 +611,7 @@ def main():
 
     # 3. 烧字幕（底部大字 + 右上角免责），一次重编码出片
     ass = os.path.join(work, "subs.ass")
-    build_ass(segments, timing, audio_durs, cfg, disclaimer, ass)
+    build_ass(segments, timing, audio_durs, cfg, disclaimer, ass, clause_bounds)
     run(["ffmpeg", "-y", "-v", "error", "-i", joined,
          "-vf", f"ass={ass}",
          "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
